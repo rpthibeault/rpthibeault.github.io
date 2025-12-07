@@ -127,7 +127,7 @@ make CC=clang LD=ld.lld -j8
 ### Fixing the bug
 
 Let's look at the stack trace of the crash:
-```crash
+```text
 BUG: KMSAN: uninit-value in hci_cmd_complete_evt+0xca3/0xe90 net/bluetooth/hci_event.c:4226
   hci_cmd_complete_evt+0xca3/0xe90 net/bluetooth/hci_event.c:4226
   hci_event_func net/bluetooth/hci_event.c:7556 [inline]
@@ -289,11 +289,11 @@ Let's look up "Host Controller interface (HCI)" in the Bluetooth documentation. 
 The HCI docs are [here](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html). 
 From reading the docs, the first value of the header is the [Packet Type](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/three-wire-uart-transport-layer.html#UUID-1cf959bb-57a0-e782-4324-a9bc4ee3f134). The value 0x04 means the packet is an [HCI Event Packet](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-f209cdf7-0496-8bcd-b7e1-500831511378). From here, we know that an event packet is of the form:
 
-![](/assets/images/1653f7aca9b561.png){: width="512px" }
+![](assets/images/1653f7aca9b561.png)
 
 Meaning, skb->data is supposed to contain the event code, the parameter total length, and the event parameters. Therefore,  0x0E is the event code, which indeed is [HCI Command Complete Event](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-76d31a33-1a9e-07bc-87c4-8ebffee065fd):
 
-![](/assets/images/command_complete_event.png){: width="768px" }
+![](assets/images/command_complete_event.png)
 
 So we observe that skb->data is supposed to contain the event parameters `Num_HCI_Command_Packets`, `Command_Opcode`, and `Return Parameters`, all of which are junk values. However, recall the code above, in the case of an unknown opcode, skb->data[0] is supposed to be the status. Where have all the other values in the data gone, then?
 
@@ -346,7 +346,7 @@ Since all the checks pass in hci_event_packet() and hci_event_func() and we get 
     This is confirmed by debugging with gdb, which is left as an exercise to the reader.
 
 So, to answer our original questions from before,
-```txt
+```text
 Hence, we must investigate further. What are we actually sending here? How does our input lead to the scenario that results in the KMSAN uninit value?
 ```
 What we are actually sending here is:
@@ -361,7 +361,7 @@ byte 5 | Return_Parameters: junk 4
 And what actually matters is that the opcode is some junk value that's not recognized. Curiously, this coincides with the specific scenario we discussed earlier: if an opcode is unknown, byte 0 contains the status. This is done to support vendor-specific commands sent by HCI drivers.
 
 Now we look back at our hypothesis:
-```txt
+```text
 So we hypothesize that `skb->data[0]` is uninitialized memory. But why is it uninitialized? 
 ```
 The answer: we know that skb->data[0] is uninitialized memory because all the data was pulled in hci_event_func(), leaving skb->data empty. Hence, the crash is actually an array-out-of-bounds bug reported as an uninitialized memory bug (by coincidence, skb->data[0] now so happens to point to uninitialized memory).
