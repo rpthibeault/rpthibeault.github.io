@@ -176,7 +176,9 @@ Workqueue: hci0 hci_rx_work
 ```
 
 Since this is a KMSAN bug, which are typically easy to fix, I'll leave out most of the crash report so we can focus on the crash itself.
-The crash event, which we know is an "uninit-value" from the crash log, is at net/bluetooth/hci_event.c:4226. We know that line 4226 must be using an uninitialized value.
+The crash event, which we know is an "uninit-value" from the crash log, is at net/bluetooth/hci_event.c:4226. This means that KMSAN detected the use of an uninitialized value on line 4226, and issued a warning. Since the kernel is compiled with panic-on-warn, it panicked and crashed.
+
+**Note**: KASAN and KMSAN track memory by state, not by value. So, it doesn't matter what the *value* is at the address we're going to crash at, it just matters that the kernel did not directly allocate memory for that address.
 
 This is line 4226 in the commit syzkaller is testing:
 <span class="margin-note-source">
@@ -307,7 +309,7 @@ From reading the docs, the first value of the header is the [Packet Type](https:
 
 Meaning, skb->data is supposed to contain the event code, the parameter total length, and the event parameters. Therefore,  0x0E is the event code, which indeed is [HCI Command Complete Event](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-76d31a33-1a9e-07bc-87c4-8ebffee065fd):
 
-![](/assets/images/command_complete_event.png){: width="768px" }
+![](/assets/images/command_complete_event.png){: width="896px" }
 
 So we observe that skb->data is supposed to contain the event parameters `Num_HCI_Command_Packets`, `Command_Opcode`, and `Return Parameters`, all of which are junk values. However, recall the code above, in the case of an unknown opcode, skb->data[0] is supposed to be the status. Where have all the other values in the data gone, then?
 
