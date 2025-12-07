@@ -55,9 +55,17 @@ The bug: [KMSAN: uninit-value in hci_cmd_complete_evt](https://syzkaller.appspot
 
 ### Reproducing the bug
 
-The first step to fixing a Syzkaller bug is to reproduce it. That way, you can test locally, instead of sending a patch test request email to Syzkaller for every fix you make, since those can take over an hour to complete.
+Syzkaller compiles kernels with the panic-on-warn flag set, along with one of KASAN, KMSAN, or UBSAN. Syzkaller then fuzzes the kernel with a series of test programs, and if one of KASAN, KMSAN, or UBSAN gives a warning, the kernel panics and crashes. Once it finds a crash, Syzkaller sends a bug report to the dashboard and to the appropriate kernel mailing lists.
 
-The first step in reproducing the bug is to get the reproduction assets from Syzkaller. In our case:
+The first step to fixing a reported Syzkaller bug is to reproduce it. That way, you can test locally, instead of sending a patch test request email to Syzkaller for every fix you make, since those can take over an hour to complete. In general, we reproduce Syzkaller bugs with the reproducer provided in the bug report. We run the reproducer on a virtual machine with qemu or on a special local test system. We will be using qemu.
+
+The first step in reproducing the bug is to download the reproduction assets from Syzkaller. They are specific to the bug and can be found in the Crashes section of the bug report. 
+
+When downloading the reproduction assets from Syzkaller, you're getting the exact compiled kernel image it used to produce the crash, and a C reproducer that *should* reproduce the crash. Syzkaller itself uses Syz to fuzz the kernel, and in some cases, converting a Syz reproducer to C reproducer is unreliable. If that's the case, then you must use the Syz reproducer.
+
+Here is a link to the Syzkaller docs explaining [how to reproduce crashes](https://github.com/google/syzkaller/blob/master/docs/reproducing_crashes.md).
+
+I use wget to download the assets:
 ```Bash
 wget -O repro.c https://syzkaller.appspot.com/x/repro.c?163c6458580000
 wget https://storage.googleapis.com/syzbot-assets/90b0fb888152/disk-9b0d551b.raw.xz
@@ -71,7 +79,7 @@ Compile the C repro:
 ```Bash
 gcc -o repro -lpthread -static repro.c
 ```
-Now run qemu. My command was:
+Now run a virtual machine with qemu. My command for this bug was:
 ```Bash
 qemu-system-x86_64 -m 8192 -smp 1 -machine q35,accel=kvm -cpu host \
 -kernel bzImage-9b0d551b \
@@ -99,11 +107,11 @@ In another terminal, you'll want to copy the repro into the vm:
 scp -O -P 10022 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o IdentitiesOnly=yes repro root@127.0.0.1:/root/
 ```
 
-Run the repro in the VM and wait a second for the VM to crash:
+Now, run the repro in the qemu virtual machine and wait a second for the crash:
 ```Bash
 ./repro
 ```
-If the repro doesn't crash the VM, you've done something wrong.
+If the repro doesn't crash the VM, you've done something wrong. Or, the C reproducer is unreliable. However, in this case, the C reproducer is reliable, so you have done something wrong with the environment.
 
 Now that we can reproduce the bug, we can make changes with the belief that when testing locally, we can see if we have fixed it. Then send a patch test request email to Syzkaller later to verify.
 
@@ -163,9 +171,7 @@ Since this is a KMSAN bug, which are typically easy to fix, I'll leave out most 
 The crash event, which we know is an "uninit-value" from the crash log, is at net/bluetooth/hci_event.c:4226. We know that line 4226 must be using an uninitialized value.
 
 This is line 4226 in the commit syzkaller is testing:
-
 > [net/bluetooth/hci_event.c:4226](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n4226)
-
 ```C
 hci_req_cmd_complete(hdev, *opcode, *status, req_complete,
                  req_complete_skb);
@@ -176,9 +182,7 @@ What's gone wrong here? Well, since the error is with this line in particular an
 The questions now: what is opcode, and what is status?
 
 Let's look at the entire function in its relevant entirety:
-
 > [net/bluetooth/hci_event.c:4194](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n4194)
-
 ```C
 static void hci_cmd_complete_evt(struct hci_dev *hdev, void *data,
                                 struct sk_buff *skb, u16 *opcode, u8 *status,
@@ -255,9 +259,7 @@ We can verify that the comment is telling the truth about the unknown opcode, si
 So we hypothesize that `skb->data[0]` is uninitialized memory. But why is it uninitialized? 
 
 We can look at Syzkaller's repro.c to see what's happening that led to this point. Looking at the crash stack trace from earlier, we know that `Uninit was created at:` began with a write syscall. This is what the repro.c is doing:
-
 > [repro.c](https://syzkaller.appspot.com/text?tag=ReproC&x=163c6458580000)
-
 ```C
 static long syz_emit_vhci(volatile long a0, volatile long a1)
 {
@@ -287,30 +289,18 @@ Let's look up "Host Controller interface (HCI)" in the Bluetooth documentation. 
 The HCI docs are [here](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html). 
 From reading the docs, the first value of the header is the [Packet Type](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/three-wire-uart-transport-layer.html#UUID-1cf959bb-57a0-e782-4324-a9bc4ee3f134). The value 0x04 means the packet is an [HCI Event Packet](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-f209cdf7-0496-8bcd-b7e1-500831511378). From here, we know that an event packet is of the form:
 
-```
-Event Packet Format:
-- Event Code (1 byte)
-- Parameter Total Length (1 byte)
-- Event Parameters (variable)
-```
+![](/assets/images/1653f7aca9b561.png){: width="512px" }
 
-Therefore,  0x0E is the event code, which indeed is [HCI Command Complete Event](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-76d31a33-1a9e-07bc-87c4-8ebffee065fd):
+Meaning, skb->data is supposed to contain the event code, the parameter total length, and the event parameters. Therefore,  0x0E is the event code, which indeed is [HCI Command Complete Event](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-76d31a33-1a9e-07bc-87c4-8ebffee065fd):
 
-```
-Command Complete Event Format:
-- Num_HCI_Command_Packets (1 byte)
-- Command_Opcode (2 bytes)
-- Return Parameters (variable)
-```
+![](/assets/images/command_complete_event.png){: width="768px" }
 
 So we observe that skb->data is supposed to contain the event parameters `Num_HCI_Command_Packets`, `Command_Opcode`, and `Return Parameters`, all of which are junk values. However, recall the code above, in the case of an unknown opcode, skb->data[0] is supposed to be the status. Where have all the other values in the data gone, then?
 
 Let's go up the stack trace into hci_event_func() and hci_event_packet().
 
 **Note**: Since hci_event_packet() is a long function I'll link it [here](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n7562) and summarize that event code and parameter total length are part of the header, and have both been pulled. Hence, only the event parameters remain in `skb->data` when we reach `hci_event_func()`.
-
 > [net/bluetooth/hci_event.c:7525](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n7525)
-
 ```C
 static void hci_event_func(struct hci_dev *hdev, u8 event, struct sk_buff *skb,
                            u16 *opcode, u8 *status,
@@ -414,3 +404,4 @@ I deliberately avoided the low-hanging fruit, easy fixes for compiler warnings a
 However, the direction I took in the program does have a steep learning curve due to the different subsystems. For every subsystem, you must learn how it works and how the maintainer(s) like to do things. How do they test? Do they like patches submitted in a specific way? Moreover, you're not just learning a 'subsystem', you're learning a technology. For example, with Bluetooth, you must know how Bluetooth works in general, and how the the driver works, in addition to figuring out how to fix a bug. The learning curve is why I advise most people to stick to 1-2 subsystems rather than the 4 I did. But if you are willing to spend lots of time learning subsystems, then fixing bugs in several of them is absolutely worth it. I now know how Bluetooth, xfs, ntfs3, and loop/block work to a degree that I can send a cogent patch to them all without further investigation.
 
 In sum, the LKMP was challenging and having mentors there to guide me through sending my first patch proved valuable. I am grateful for my experience in the Linux Kernel Mentorship Program and thank Shuah Khan, David Hunter, and Khalid Aziz for being great mentors and resources to learn from.
+

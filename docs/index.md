@@ -10,10 +10,7 @@ Montreal, Canada
 ## Posts
 
 ```{toctree}
-:maxdepth: 2
-:caption: Contents:
+:maxdepth: 1
 
 posts/linux-kernel-mentorship
 ```
-
-- [Reflections on the Linux Kernel Mentorship](posts/linux-kernel-mentorship.md) - December 7, 2025
