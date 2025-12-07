@@ -140,6 +140,8 @@ vertical-align: top;
 .main-column {
 padding: 0 2rem;
 min-width: 0;
+position: relative;
+z-index: 10;
 }
 
 /* --- CODE BLOCKS & LINE NUMBERS --- */
