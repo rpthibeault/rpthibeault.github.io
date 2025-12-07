@@ -1,8 +1,6 @@
----
-layout: post
-title: "Reflections on the Linux Kernel Mentorship"
-date: 2025-12-07
----
+# Reflections on the Linux Kernel Mentorship
+
+**December 7, 2025**
 
 ## Introduction
 
@@ -96,7 +94,7 @@ For debugging, you'll want to add the flags `-s -S` which will hang the VM until
 
 **Note**: appending `2>&1 | tee vm.log` to the end of the command is helpful; it will copy the vm output into a file called vm.log.
 
-**Note**: having a .gdbinit with the followingis also helpful; these will copy the gdb output to a file called gdb.txt:
+**Note**: having a .gdbinit with the following is also helpful; these will copy the gdb output to a file called gdb.txt:
 ```Bash
 set trace-commands on
 set logging enabled
@@ -171,9 +169,9 @@ Since this is a KMSAN bug, which are typically easy to fix, I'll leave out most 
 The crash event, which we know is an "uninit-value" from the crash log, is at net/bluetooth/hci_event.c:4226. We know that line 4226 must be using an uninitialized value.
 
 This is line 4226 in the commit syzkaller is testing:
-<span class="margin-note-source">
-  [net/bluetooth/hci_event.c:4226](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n4226)
-</span>
+
+> [net/bluetooth/hci_event.c:4226](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n4226)
+
 ```C
 hci_req_cmd_complete(hdev, *opcode, *status, req_complete,
                  req_complete_skb);
@@ -184,9 +182,9 @@ What's gone wrong here? Well, since the error is with this line in particular an
 The questions now: what is opcode, and what is status?
 
 Let's look at the entire function in its relevant entirety:
-<span class="margin-note-source">
-  [net/bluetooth/hci_event.c:4194](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n4194)
-</span>
+
+> [net/bluetooth/hci_event.c:4194](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n4194)
+
 ```C
 static void hci_cmd_complete_evt(struct hci_dev *hdev, void *data,
                                 struct sk_buff *skb, u16 *opcode, u8 *status,
@@ -263,9 +261,9 @@ We can verify that the comment is telling the truth about the unknown opcode, si
 So we hypothesize that `skb->data[0]` is uninitialized memory. But why is it uninitialized? 
 
 We can look at Syzkaller's repro.c to see what's happening that led to this point. Looking at the crash stack trace from earlier, we know that `Uninit was created at:` began with a write syscall. This is what the repro.c is doing:
-<span class="margin-note-source">
-  [repro.c](https://syzkaller.appspot.com/text?tag=ReproC&x=163c6458580000)
-</span>
+
+> [repro.c](https://syzkaller.appspot.com/text?tag=ReproC&x=163c6458580000)
+
 ```C
 static long syz_emit_vhci(volatile long a0, volatile long a1)
 {
@@ -295,11 +293,21 @@ Let's look up "Host Controller interface (HCI)" in the Bluetooth documentation. 
 The HCI docs are [here](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html). 
 From reading the docs, the first value of the header is the [Packet Type](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/three-wire-uart-transport-layer.html#UUID-1cf959bb-57a0-e782-4324-a9bc4ee3f134). The value 0x04 means the packet is an [HCI Event Packet](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-f209cdf7-0496-8bcd-b7e1-500831511378). From here, we know that an event packet is of the form:
 
-![](/assets/images/1653f7aca9b561.png){: width="512px" }
+```
+Event Packet Format:
+- Event Code (1 byte)
+- Parameter Total Length (1 byte)
+- Event Parameters (variable)
+```
 
-Meaning, skb->data is supposed to contain the event code, the parameter total length, and the event parameters. Therefore,  0x0E is the event code, which indeed is [HCI Command Complete Event](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-76d31a33-1a9e-07bc-87c4-8ebffee065fd):
+Therefore,  0x0E is the event code, which indeed is [HCI Command Complete Event](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host-controller-interface/host-controller-interface-functional-specification.html#UUID-76d31a33-1a9e-07bc-87c4-8ebffee065fd):
 
-![](/assets/images/command_complete_event.png){: width="768px" }
+```
+Command Complete Event Format:
+- Num_HCI_Command_Packets (1 byte)
+- Command_Opcode (2 bytes)
+- Return Parameters (variable)
+```
 
 So we observe that skb->data is supposed to contain the event parameters `Num_HCI_Command_Packets`, `Command_Opcode`, and `Return Parameters`, all of which are junk values. However, recall the code above, in the case of an unknown opcode, skb->data[0] is supposed to be the status. Where have all the other values in the data gone, then?
 
@@ -307,9 +315,8 @@ Let's go up the stack trace into hci_event_func() and hci_event_packet().
 
 **Note**: Since hci_event_packet() is a long function I'll link it [here](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n7562) and summarize that event code and parameter total length are part of the header, and have both been pulled. Hence, only the event parameters remain in `skb->data` when we reach `hci_event_func()`.
 
-<span class="margin-note-source">
-  [net/bluetooth/hci_event.c:7525](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n7525)
-</span>
+> [net/bluetooth/hci_event.c:7525](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/bluetooth/hci_event.c?id=9b0d551bcc05fa4786689544a2845024db1d41b6#n7525)
+
 ```C
 static void hci_event_func(struct hci_dev *hdev, u8 event, struct sk_buff *skb,
                            u16 *opcode, u8 *status,
@@ -415,4 +422,3 @@ I deliberately avoided the low-hanging fruit, easy fixes for compiler warnings a
 However, the direction I took in the program does have a steep learning curve due to the different subsystems. For every subsystem, you must learn how it works and how the maintainer(s) like to do things. How do they test? Do they like patches submitted in a specific way? Moreover, you're not just learning a 'subsystem', you're learning a technology. For example, with Bluetooth, you must know how Bluetooth works in general, and how the the driver works, in addition to figuring out how to fix a bug. The learning curve is why I advise most people to stick to 1-2 subsystems rather than the 4 I did. But if you are willing to spend lots of time learning subsystems, then fixing bugs in several of them is absolutely worth it. I now know how Bluetooth, xfs, ntfs3, and loop/block work to a degree that I can send a cogent patch to them all without further investigation.
 
 In sum, the LKMP was challenging and having mentors there to guide me through sending my first patch proved valuable. I am grateful for my experience in the Linux Kernel Mentorship Program and thank Shuah Khan, David Hunter, and Khalid Aziz for being great mentors and resources to learn from.
-
