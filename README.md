@@ -6,7 +6,7 @@ Personal blog and documentation.
 
 Install dependencies:
 ```bash
-pip install sphinx myst-parser
+pip install -r requirements.txt
 ```
 
 Build the site:
