@@ -63,9 +63,17 @@ The bug: [KMSAN: uninit-value in hci_cmd_complete_evt](https://syzkaller.appspot
 
 ### Reproducing the bug
 
-The first step to fixing a Syzkaller bug is to reproduce it. That way, you can test locally, instead of sending a patch test request email to Syzkaller for every fix you make, since those can take over an hour to complete.
+Syzkaller compiles kernels with the panic-on-warn flag set, along with one of KASAN, KMSAN, or UBSAN. Syzkaller then fuzzes the kernel with a series of test programs, and if one of KASAN, KMSAN, or UBSAN gives a warning, the kernel panics and crashes. Once it finds a crash, Syzkaller sends a bug report to the dashboard and to the appropriate kernel mailing lists.
 
-The first step in reproducing the bug is to get the reproduction assets from Syzkaller. In our case:
+The first step to fixing a reported Syzkaller bug is to reproduce it. That way, you can test locally, instead of sending a patch test request email to Syzkaller for every fix you make, since those can take over an hour to complete. In general, we reproduce Syzkaller bugs with the reproducer provided in the bug report. We run the reproducer on a virtual machine with qemu or on a special local test system. We will be using qemu.
+
+The first step in reproducing the bug is to download the reproduction assets from Syzkaller. They are specific to the bug and can be found in the Crashes section of the bug report. 
+
+When downloading the reproduction assets from Syzkaller, you're getting the exact compiled kernel image it used to produce the crash, and a C reproducer that *should* reproduce the crash. Syzkaller itself uses Syz to fuzz the kernel, and in some cases, converting a Syz reproducer to C reproducer is unreliable. If that's the case, then you must use the Syz reproducer.
+
+Here is a link to the Syzkaller docs explaining [how to reproduce crashes](https://github.com/google/syzkaller/blob/master/docs/reproducing_crashes.md).
+
+I use wget to download the assets:
 ```Bash
 wget -O repro.c https://syzkaller.appspot.com/x/repro.c?163c6458580000
 wget https://storage.googleapis.com/syzbot-assets/90b0fb888152/disk-9b0d551b.raw.xz
@@ -79,7 +87,7 @@ Compile the C repro:
 ```Bash
 gcc -o repro -lpthread -static repro.c
 ```
-Now run qemu. My command was:
+Now run a virtual machine with qemu. My command for this bug was:
 ```Bash
 qemu-system-x86_64 -m 8192 -smp 1 -machine q35,accel=kvm -cpu host \
 -kernel bzImage-9b0d551b \
@@ -96,7 +104,7 @@ For debugging, you'll want to add the flags `-s -S` which will hang the VM until
 
 **Note**: appending `2>&1 | tee vm.log` to the end of the command is helpful; it will copy the vm output into a file called vm.log.
 
-**Note**: having a .gdbinit with the followingis also helpful; these will copy the gdb output to a file called gdb.txt:
+**Note**: having a .gdbinit with the following is also helpful; these will copy the gdb output to a file called gdb.txt:
 ```Bash
 set trace-commands on
 set logging enabled
@@ -107,11 +115,11 @@ In another terminal, you'll want to copy the repro into the vm:
 scp -O -P 10022 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o IdentitiesOnly=yes repro root@127.0.0.1:/root/
 ```
 
-Run the repro in the VM and wait a second for the VM to crash:
+Now, run the repro in the qemu virtual machine and wait a second for the crash:
 ```Bash
 ./repro
 ```
-If the repro doesn't crash the VM, you've done something wrong.
+If the repro doesn't crash the VM, you've done something wrong. Or, the C reproducer is unreliable. However, in this case, the C reproducer is reliable, so you have done something wrong with the environment.
 
 Now that we can reproduce the bug, we can make changes with the belief that when testing locally, we can see if we have fixed it. Then send a patch test request email to Syzkaller later to verify.
 
